@@ -1,6 +1,9 @@
 # Ionizing-Radiation-Detector
 This code is for building an Ionizing Radiation Detector using Arduino!
 
+Check out the tutorial for this code here:
+https://www.hackster.io/k-gray/ionizing-radiation-detector-a0a782
+
 # How to code the Microcontroller
 
 What you need:
