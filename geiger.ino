@@ -45,6 +45,7 @@ const byte fullChar[8] = {
 };
 
 boolean vib = true;
+boolean seconds = true;
 
 int i = 0;
 const int n = 0;
@@ -84,6 +85,7 @@ void setup() {
   pinMode(vibration, OUTPUT);
   pinMode(SDss, OUTPUT);
   pinMode(button, INPUT);
+  digitalWrite(vibration, LOW);
   
   ss.begin(GPSBaud);
   
@@ -137,7 +139,7 @@ void setup() {
     myFile.close();
   }
   else {
-    Serial.println("Failed to open google file");
+    Serial.println("Failed to open googler file");
   }
   
   attachInterrupt(digitalPinToInterrupt(geiger_pin), isrcount, FALLING);
@@ -169,7 +171,6 @@ void loop() {
     lastmillis = millis();
     if (mode == 3){
       lcdDisplayData(3);
-      lastUSVH = USVH;
       if (vib){
         if (USVH > 2){
           digitalWrite(vibration, HIGH);
@@ -193,14 +194,15 @@ void loop() {
   }
   
   if (digitalRead(button) == HIGH){
+    int taps = 0;
     redo:
-
-    mode++;
-    if (mode >= 5){
-      mode = 1;
+    
+    taps++;
+    if (taps >= 6){
+      taps = 1;
     }
-    Serial.print("Mode: ");
-    Serial.println(mode);
+    Serial.print("Taps: ");
+    Serial.println(taps);
     
     while (digitalRead(button) == HIGH);
     
@@ -218,24 +220,26 @@ void loop() {
       goto redo;
     }
     exi:
-    Serial.print("Completed Mode: ");
-    Serial.println(mode);
+    Serial.print("Completed Taps: ");
+    Serial.println(taps);
 
     lcd.clear();
     
-    if (mode == 1){
+    if (taps == 1){
       lcd.setRGB(0, 255, 0);
       lcd.setCursor(0,0);
       lcd.print(F("Standard Mode"));
       delay(3000);
+      mode = 1;
     }
-    else if (mode == 2){
+    else if (taps == 2){
       lcd.setRGB(0, 255, 255);
       lcd.setCursor(3,0);
       lcd.print(F("Bar Mode"));
       delay(3000);
+      mode = 2;
     }
-    else if (mode == 3){
+    else if (taps == 3){
       lcd.setRGB(0, 0, 255);
       lcd.setCursor(0,0);
       lcd.print(F("Equivalents Mode"));
@@ -244,8 +248,9 @@ void loop() {
       lcd.setRGB(0, 255, 0);
       lcd.setCursor(0,0);
       lcd.print(F("Acquiring Data"));
+      mode = 3;
     }
-    else if (mode == 4){
+    else if (taps == 4){
       vib = !vib;
       lcd.setRGB(255, 0, 255);
       lcd.setCursor(3,0);
@@ -260,6 +265,17 @@ void loop() {
         lcd.write(2);
         delay(300);
       }
+      mode = 1;
+    }
+    else if (taps == 5){
+      seconds = !seconds;
+      lcd.setRGB(255, 0, 255);
+      lcd.setCursor(3,0);
+      lcd.print(F("Seconds"));
+      lcd.setCursor(4,1);
+      lcd.print(seconds > 0 ? "On" : "Off");
+      delay(3000);
+      lcd.clear();
       mode = 1;
     }
   }
@@ -292,8 +308,11 @@ void isrcount() {
   }
   
   if (mode == 1 || mode == 2){
+    Serial.println("Mode check");
     if (vib){
+      Serial.println("Vib true");
       if (timebetweenpulses < 1000){
+        Serial.println("Vibration motor on");
         digitalWrite(vibration, HIGH);
         delay(300); 
         digitalWrite(vibration, LOW);
@@ -335,13 +354,23 @@ void lcdDisplayData(int mo){
     lcd.setCursor(0,0);
     lcd.print(F("Time in Pulses:"));
     lcd.setCursor(4,1);
-    lcd.print(timebetweenpulses/1000);//seconds
+    if (seconds){
+      lcd.print(timebetweenpulses/1000);//seconds
+    }
+    else {
+      lcd.print(timebetweenpulses);//milliseconds
+    }
   }
   else if (mo == 2){
     lcd.setCursor(0,0);
-    lcd.print(F("Time...:"));
-    lcd.setCursor(9,0);
-    lcd.print(timebetweenpulses/1000);//seconds
+    lcd.print(F("Time:"));
+    lcd.setCursor(6,0);
+    if (seconds){
+      lcd.print(timebetweenpulses/1000);//seconds
+    }
+    else {
+      lcd.print(timebetweenpulses);//milliseconds
+    }
     lcd.setCursor(0,1);
     lcdBar(timebetweenpulses);
   }
@@ -363,7 +392,8 @@ void lcdDisplayData(int mo){
 }
 
 void lcdBar(int re){
-  for (int i=0;i<(nearestEqualMS(re)+1);i++){
+  int inp = map(nearestEqualMS(re),0,9,0,14);
+  for (int i=0;i<(inp+1);i++){
     lcd.setCursor(i+1,1);
     lcd.write(4);
   }
@@ -411,36 +441,24 @@ void lcdbacklight(){
   default :
     break;
   }
-  if (theNearestEqual < 0.50){
-    lcd.setRGB(0,255,0);
-  }
 }
 
 void saveToFile(int typ){
   if (typ != 0){
+    count++;
+    Serial.print("Count: ");
+    Serial.println(count);
     if (typ == 1){
       myFile = SD.open("google.txt", FILE_WRITE);
-      count++;
     }
     else if (typ == 2){
       myFile = SD.open("googler.txt", FILE_WRITE);
-      count2++;
     }
-    Serial.print("Count: ");
-    Serial.println(count);
-    Serial.print("Count2: ");
-    Serial.println(count2);
+    
     if (myFile){
-      if (typ == 1){
-        myFile.print(count);
-        myFile.print(",Geiger");
-        myFile.print(count);
-      }
-      else if (typ == 2){
-        myFile.print(count2);
-        myFile.print(",GeigerT");
-        myFile.print(count2);
-      }
+      myFile.print(count);
+      myFile.print(",Geiger");
+      myFile.print(count);
       myFile.print(",");
       myFile.print(gps.date.month());
       myFile.print(F("/"));
