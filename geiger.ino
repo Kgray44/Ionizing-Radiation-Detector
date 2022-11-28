@@ -1,15 +1,58 @@
-#include <DFRobot_RGBLCD1602.h>
+/*************************************************************
+File Name: geiger.ino
+Processor/Platform: Leonardo (CM-23U4 tested)
+Development Environment: Arduino 1.8.19
+Download latest code here:
+https://github.com/Kgray44/Ionizing-Radiation-Detector
+Geiger code meant to be used alongside the tutorial found here:
+https://www.hackster.io/k-gray/ionizing-radiation-detector-a0a782
+
+Copyright 2022 K Gray
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, 
+and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE 
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR 
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, 
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Liscense found here:
+https://opensource.org/licenses/MIT
+ *************************************************************/
+
+
 #include <TinyGPS++.h>
-#include <SoftwareSerial.h>
 #include <SD.h>
+#include <SPI.h>
+#include <DFRobot_RGBLCD1602.h>
+#include <SoftwareSerial.h>
+#include <DFRobot_Geiger.h>
+#include <EEPROM.h>
 
-#define geiger_pin 0
-#define button A1
-#define vibration 11
+#define geigerPin 0//D0
+#define vibration 11//D11
 #define SDss A0
+#define button A1
 
-static const int RXPin = 9, TXPin = 1;//D1/D9
-static const uint32_t GPSBaud = 9600;
+#define startuSvh 1
+#define dangeruSvh 20
+
+#define arrSize(X) sizeof(X) / sizeof(X[0])
+
+int values[] =             {    1,         2,        5,          10,         40,      100,       250,          400,          1000,      10000   };
+const char* equivalent[] = { "Normal", "Airport", "Dental", "Norm(1day)", "Flight", "X-Ray", "NPP(1year)", "Mammogram",  "Gov Limit", "CT Scan" };
+
+const byte hazardChar[8] = {
+  0b00000,
+  0b00000,
+  0b01110,
+  0b11001,
+  0b10101,
+  0b10011,
+  0b01110,
+  0b00000
+};
 
 const byte motor1Char[8] = {
   0b00110,
@@ -44,213 +87,117 @@ const byte fullChar[8] = {
   0b11111
 };
 
-boolean vib = true;
-boolean seconds = true;
+long savegeigertime = 2000;//5 sec  //120000;//2 min
 
-int i = 0;
-const int n = 0;
-volatile long buf[n];
-float timebetweenpulses = 0;
-int pos = 0;
-
-long lastmillis = 0;
-long currentmillis = 0;
-int looptimerlength = 30000;//30 sec
-
-float lastReading = 0;
-float lastUSVH = 0;
-float CPM = 0;
-float USVH = 0;
-
-int mode = 1;
+static const int RXPin = 9, TXPin = 1;//D1/D9
+static const uint32_t GPSBaud = 9600;
 
 int timer1 = 0;
+int lastMillis = 0;
+int timer3 = 0;
+int mode = 1;
+boolean vib = true;
 int count = 0;
-int count2 = 0;
 
-#define arrSize(X) sizeof(X) / sizeof(X[0])
-
-float milli[] =            { 2000,     1000,       900,      800,        700,        600,      500,       400,          300,           100,       50     };
-float values[] =           {   0,        1,         2,        5,          10,         40,      100,       250,          400,          1000,      10000   };
-const char* equivalent[] = {"Normal", "Normal", "Airport", "Dental", "Norm(1day)", "Flight", "X-Ray", "NPP(1year)", "Mammogram",  "Gov Limit", "CT Scan" };
+int CPM = 0;
+int uSvh = 0;
+int nSvh = 0;
 
 File myFile;
+char sfileName[] = "geiger.txt";
+char wfileName[] = "warnings.txt";
 
+
+DFRobot_Geiger geiger(geigerPin);
 DFRobot_RGBLCD1602 lcd(/*lcdCols*/16,/*lcdRows*/2);
 TinyGPSPlus gps;
 SoftwareSerial ss(RXPin, TXPin);
 
 void setup() {
-  pinMode(geiger_pin, INPUT);
-  pinMode(vibration, OUTPUT);
-  pinMode(SDss, OUTPUT);
   pinMode(button, INPUT);
+  pinMode(SDss, OUTPUT);
+  pinMode(vibration, OUTPUT);
   digitalWrite(vibration, LOW);
-  
   ss.begin(GPSBaud);
+
+  geiger.start();
   
   lcd.init();
   lcd.customSymbol(1,motor1Char);
   lcd.customSymbol(2,motor2Char);
+  lcd.customSymbol(3,hazardChar);
   lcd.customSymbol(4,fullChar);
-
   lcd.setCursor(4,0);
   lcd.print(F("Geiger"));
   lcd.setCursor(3,1);
   lcd.print(F("Counter"));
   lcd.setRGB(0,255,0);
   delay(3000);
-  for (int p=0;p<2;p++){
-    for (int p=255;p>0;p--) {
-      lcd.setRGB(0, p, 0);
-      delay(3);
-    }
-    for (int p=0;p<255;p++) {
-      lcd.setRGB(0, p, 0);
-      delay(3);
-    }
-  }
   for (int i=0;i<15;i++){
     lcd.scrollDisplayRight();
     delay(100);
   }
 
-
   if (!SD.begin(SDss)) {
-    lcd.clear();
     lcd.setRGB(255, 0, 0);
     lcd.setCursor(1,0);
     lcd.print(F("SD Init Failed"));
     delay(5000);
-    lcd.clear();
-  }
-
-  myFile = SD.open("google.txt", FILE_WRITE);
-  if (myFile){
-    myFile.println(F("ID,Name,Date,Time,Latitude,Longitude,CPM,uSvh"));
-    myFile.close();
-  }
-  else {
-    Serial.println("Failed to open google file");
-  }
-  myFile = SD.open("googler.txt", FILE_WRITE);
-  if (myFile){
-    myFile.println(F("ID,Name,Date,Time,Latitude,Longitude,TimeBPulses"));
-    myFile.close();
-  }
-  else {
-    Serial.println("Failed to open googler file");
   }
   
-  attachInterrupt(digitalPinToInterrupt(geiger_pin), isrcount, FALLING);
+  lcd.clear();
 
 }
 
-void loop() {
+void loop() {  
+  //geiger.pause();
+  CPM = geiger.getCPM();
+  uSvh = geiger.getuSvh();
+  nSvh = geiger.getnSvh();
+  Serial.print("CPM: ");
+  Serial.println(CPM);
+  //geiger.start();
+
   while (ss.available() > 0){
     gps.encode(ss.read());
   }
-
-  if (gps.location.isUpdated()){
-    Serial.print("Latitude: ");
-    Serial.println(gps.location.lat(),6);
-    Serial.print("Longitude: ");
-    Serial.println(gps.location.lng(),6);
-  }
-  
-  currentmillis = millis();
-  if ((currentmillis - lastmillis) >= looptimerlength){
-    CPM = pos*(60000/looptimerlength);
-    USVH = (pos*(60000/looptimerlength))/153.80;
-    Serial.print("CPM: ");
-    Serial.println(CPM);
-    Serial.print("uSv/h: ");
-    Serial.println(USVH);
-    lastUSVH = USVH;
-    pos=0;
-    lastmillis = millis();
-    if (mode == 3){
-      lcdDisplayData(3);
-      if (vib){
-        if (USVH > 2){
-          digitalWrite(vibration, HIGH);
-          delay(300);
-          digitalWrite(vibration, LOW);
-        }
-      }
-    }
-    saveToFile(1);
-  }
-
-  if (lastReading != timebetweenpulses){
-    if (mode == 1){
-      lcdDisplayData(1);
-      lastReading = timebetweenpulses;
-    }
-    else if (mode == 2){
-      lcdDisplayData(2);
-      lastReading = timebetweenpulses;
-    }
-  }
   
   if (digitalRead(button) == HIGH){
-    int taps = 0;
-    redo:
-    
-    taps++;
-    if (taps >= 6){
-      taps = 1;
-    }
-    Serial.print("Taps: ");
-    Serial.println(taps);
-    
-    while (digitalRead(button) == HIGH);
-    
-    do {
+    /*do {
+      //redo:
       timer1++;
       delay(1);
-      if (timer1 > 2000){
-        timer1 = 0;
-        goto exi;
-      }
-    } while (digitalRead(button) == LOW);
-
-    if (digitalRead(button) == HIGH){
-      timer1 = 0;
-      goto redo;
-    }
-    exi:
-    Serial.print("Completed Taps: ");
-    Serial.println(taps);
-
+    } while (digitalRead(button) == LOW);*/
+    redo:
+    timer1++;
+    delay(1);
+    if (digitalRead(button) == HIGH){goto redo;}
+    
     lcd.clear();
     
-    if (taps == 1){
+    switch (timer1) {
+    case 0 ... 1499 :
+      mode = 1;
       lcd.setRGB(0, 255, 0);
       lcd.setCursor(0,0);
       lcd.print(F("Standard Mode"));
       delay(3000);
-      mode = 1;
-    }
-    else if (taps == 2){
+      break;
+    case 1500 ... 2499 :
+      mode = 2;
       lcd.setRGB(0, 255, 255);
       lcd.setCursor(3,0);
       lcd.print(F("Bar Mode"));
       delay(3000);
-      mode = 2;
-    }
-    else if (taps == 3){
+      break;
+    case 2500 ... 3499 :
+      mode = 3;
       lcd.setRGB(0, 0, 255);
       lcd.setCursor(0,0);
       lcd.print(F("Equivalents Mode"));
       delay(3000);
-      lcd.clear();
-      lcd.setRGB(0, 255, 0);
-      lcd.setCursor(0,0);
-      lcd.print(F("Acquiring Data"));
-      mode = 3;
-    }
-    else if (taps == 4){
+      break;
+    case 3500 ... 4499 :
       vib = !vib;
       lcd.setRGB(255, 0, 255);
       lcd.setCursor(3,0);
@@ -265,60 +212,73 @@ void loop() {
         lcd.write(2);
         delay(300);
       }
-      mode = 1;
-    }
-    else if (taps == 5){
-      seconds = !seconds;
-      lcd.setRGB(255, 0, 255);
+      break;
+    default :
+      lcd.setRGB(255, 150, 100);
       lcd.setCursor(3,0);
-      lcd.print(F("Seconds"));
-      lcd.setCursor(4,1);
-      lcd.print(seconds > 0 ? "On" : "Off");
+      lcd.print(F("Incorrect"));
+      lcd.setCursor(1,1);
+      lcd.print(F("1,2,3,or4 sec"));
       delay(3000);
-      lcd.clear();
-      mode = 1;
+      break;
     }
+    timer1=0;
+    if (mode == 1 || mode == 2 || mode == 3){
+      EEPROM.write(0, mode);
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Sucess!");
+      delay(800);
+    }
+    lcd.clear();
   }
-}
 
-void isrcount() {
-  i++;
-  if (i>= 3){
-    i=1;
-  }
+  lcdDisplayData();
   
-  buf[i] = millis();
-
-  if (buf[1] <= buf[2]){
-    timebetweenpulses = buf[2] - buf[1];
-    Serial.print("Time between pulses: ");
-    Serial.println(timebetweenpulses/1000);
-    buf[1] = 1;
-  }
-  else if (buf[1] >= buf[2]){
-    timebetweenpulses = buf[1] - buf[2];
-    Serial.print("Time between pulses: ");
-    Serial.println(timebetweenpulses/1000);
-    buf[2] = 1;
-  }
-  pos++;
-
-  if (timebetweenpulses < 500){
+  if (uSvh > startuSvh && uSvh < (dangeruSvh - 1)){
+    //lcd.setRGB(255, 172, 28);
+    lcd.setCursor(14,1);
+    lcd.write(3);
+    if (vib){
+      //analogWrite(vibration, 128);
+      digitalWrite(vibration, HIGH);
+      delay(300);
+      digitalWrite(vibration, LOW);
+    }
+    else {
+      delay(300);
+    }
+    lcd.clear();
     saveToFile(2);
   }
-  
-  if (mode == 1 || mode == 2){
-    Serial.println("Mode check");
+  else if (uSvh >= dangeruSvh){
+    //lcd.setRGB(255, 0, 0);
+    lcd.setCursor(14,1);
+    lcd.write(3);
     if (vib){
-      Serial.println("Vib true");
-      if (timebetweenpulses < 1000){
-        Serial.println("Vibration motor on");
-        digitalWrite(vibration, HIGH);
-        delay(300); 
-        digitalWrite(vibration, LOW);
-      }
+      //analogWrite(vibration, 255);
+      digitalWrite(vibration, HIGH);
+      delay(700);
+      digitalWrite(vibration, LOW);
     }
+    else {
+      delay(700);
+    }
+    saveToFile(1);
   }
+  
+  if ((millis() - lastMillis) >= savegeigertime && uSvh > 0){
+    count++;
+    saveToFile(3);
+    lastMillis = millis();
+  }
+  /*timer3++;
+  if (timer3 >= 800){
+    lcd.clear();
+    lcdDisplayData(uSvh);
+    timer3 = 0;
+  }*/
+  delay(3000);
 }
 
 int nearestEqual(int x, bool sorted = true) {
@@ -334,83 +294,49 @@ int nearestEqual(int x, bool sorted = true) {
   }
   return idx;
 }
-int nearestEqualMS(int x, bool sorted = true) {
-  int idx = 0; // by default near first element
-  int distance = abs(milli[idx] - x);
-  for (int i = 1; i < arrSize(milli); i++) {
-    int d = abs(milli[i] - x);
-    if (d < distance) {
-      idx = i;
-      distance = d;
-    }
-    else if (sorted) return idx;
-  }
-  return idx;
-}
 
-void lcdDisplayData(int mo){
-  lcd.clear();
-  if (mo == 1){
+void lcdDisplayData(){
+  if (mode == 1){
     lcd.setCursor(0,0);
-    lcd.print(F("Time in Pulses:"));
+    lcd.print(F("Geiger Val(CPM):"));
     lcd.setCursor(4,1);
-    if (seconds){
-      lcd.print(timebetweenpulses/1000);//seconds
-    }
-    else {
-      lcd.print(timebetweenpulses);//milliseconds
-    }
+    lcd.print(CPM);
   }
-  else if (mo == 2){
+  else if (mode == 2){
     lcd.setCursor(0,0);
-    lcd.print(F("Time:"));
-    lcd.setCursor(6,0);
-    if (seconds){
-      lcd.print(timebetweenpulses/1000);//seconds
-    }
-    else {
-      lcd.print(timebetweenpulses);//milliseconds
-    }
+    lcd.print(F("Geiger:"));
+    lcd.setCursor(9,0);
+    lcd.print(CPM);
     lcd.setCursor(0,1);
-    lcdBar(timebetweenpulses);
+    lcdBar(CPM);
   }
-  else if (mo == 3){
+  else if (mode == 3){
     lcd.setCursor(0,0);
-    lcd.print(F("uSv/h:"));
-    lcd.setCursor(7,0);
-    lcd.print(USVH);
+    lcd.print(F("Geiger:"));
+    lcd.setCursor(9,0);
+    lcd.print(CPM);
     lcd.setCursor(0,1);
-    if (USVH == 0.00){
+    if (CPM == 0){
       lcd.print("Normal");
     }
     else {
-      lcd.print(equivalent[nearestEqual(USVH)]);
+      lcd.print(equivalent[nearestEqual(CPM)]);
       delay(500);
     }
   }
-  lcdbacklight();
+  lcdbacklight(CPM);
 }
 
 void lcdBar(int re){
-  int inp = map(nearestEqualMS(re),0,9,0,14);
-  for (int i=0;i<(inp+1);i++){
+  for (int i=0;i<(nearestEqual(re)+1);i++){
     lcd.setCursor(i+1,1);
     lcd.write(4);
   }
 }
 
-void lcdbacklight(){
-  int theNearestEqual;
-  if (mode == 1 || mode == 2){
-    theNearestEqual = nearestEqualMS(timebetweenpulses);
-  }
-  else {
-    theNearestEqual = nearestEqual(CPM);
-  }
+void lcdbacklight(int re){
+  int theNearestEqual = nearestEqual(re);
   switch (theNearestEqual) {
-  case 0 :
-    lcd.setRGB(0,255,0);
-    break;
   case 1 :
     lcd.setRGB(0,255,0);
     break;
@@ -441,53 +367,87 @@ void lcdbacklight(){
   default :
     break;
   }
+  if (re == 0){
+    lcd.setRGB(0,255,0);
+  }
 }
 
-void saveToFile(int typ){
-  if (typ != 0){
-    count++;
-    Serial.print("Count: ");
-    Serial.println(count);
-    if (typ == 1){
-      myFile = SD.open("google.txt", FILE_WRITE);
-    }
-    else if (typ == 2){
-      myFile = SD.open("googler.txt", FILE_WRITE);
-    }
-    
+void saveToFile(int warningType){
+  if (warningType == 3){
+    myFile = SD.open(sfileName, FILE_WRITE);
     if (myFile){
-      myFile.print(count);
-      myFile.print(",Geiger");
-      myFile.print(count);
-      myFile.print(",");
-      myFile.print(gps.date.month());
-      myFile.print(F("/"));
-      myFile.print(gps.date.day());
-      myFile.print(F("/"));
-      myFile.print(gps.date.year());
-      myFile.print(",");
+      myFile.print(F("Time: "));
       myFile.print(gps.time.hour());
       myFile.print(F(":"));
       myFile.print(gps.time.minute());
       myFile.print(F(":"));
-      myFile.print(gps.time.second());
-      myFile.print(",");
-      myFile.print(gps.location.lat(),8);
-      myFile.print(",");
-      myFile.print(gps.location.lng(),8);
-      myFile.print(",");
-      if (typ == 1){
-        myFile.print(CPM,2);
-        myFile.print(",");
-        myFile.println(USVH,2);
-      }
-      else if (typ == 2){
-        myFile.println(timebetweenpulses,3);
-      }
+      myFile.println(gps.time.second());
+      myFile.print(F("Date: "));
+      myFile.print(gps.date.month());
+      myFile.print(F("/"));
+      myFile.print(gps.date.day());
+      myFile.print(F("/"));
+      myFile.println(gps.date.year());
+      myFile.print(F("Count: "));
+      myFile.println(count);
+      myFile.print(F("Millis: "));
+      myFile.println(millis());
+      myFile.print(F("Latitude: "));
+      myFile.println(gps.location.lat(),6);
+      myFile.print(F("Longitude: "));
+      myFile.println(gps.location.lng(),6);
+      myFile.print(F("Satellites: "));
+      myFile.println(gps.satellites.value());
+      myFile.print(F("Altitude: "));
+      myFile.println(gps.altitude.feet());
+      myFile.print(F("Course: "));
+      myFile.println(gps.course.deg());
+      myFile.print(F("Speed: "));
+      myFile.println(gps.speed.mph(),2);
+      myFile.print(F("Geiger (CPM): "));
+      myFile.println(CPM);
+      myFile.print(F("Geiger (uSvh): "));
+      myFile.println(uSvh);
+      myFile.print(F("Geiger (nSvh): "));
+      myFile.println(nSvh);
+      myFile.println(F("----------------------------------------------------------"));
+      myFile.println("");
       myFile.close();
     }
-    else { 
-      Serial.println("Failed to write");
+  }
+  else {
+    myFile = SD.open(wfileName, FILE_WRITE);
+    if (myFile){
+      myFile.println(F("---------Warning---------"));
+      if (warningType == 1){
+        myFile.println(F("-------Type=Severe-------"));
+      }
+      else {
+        myFile.println(F("------Type=Moderate------"));
+      }
+      myFile.print(F("Time: "));
+      myFile.print(gps.time.hour());
+      myFile.print(F(":"));
+      myFile.print(gps.time.minute());
+      myFile.print(F(":"));
+      myFile.println(gps.time.second());
+      myFile.print(F("Date: "));
+      myFile.print(gps.date.month());
+      myFile.print(F("/"));
+      myFile.print(gps.date.day());
+      myFile.print(F("/"));
+      myFile.println(gps.date.year());
+      myFile.print(F("Millis: "));
+      myFile.println(millis());
+      myFile.print(F("Geiger (CPM): "));
+      myFile.println(CPM);
+      myFile.print(F("Geiger (uSvh): "));
+      myFile.println(uSvh);
+      myFile.print(F("Geiger (nSvh): "));
+      myFile.println(nSvh);
+      myFile.println(F("----------------------------------------------------------"));
+      myFile.println("");
+      myFile.close(); 
     }
   }
 }
